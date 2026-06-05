@@ -1,0 +1,6 @@
+{
+  "name": "Stock3D",
+  "description": "Système intelligent de gestion de stock moderne avec visualisation 3D de l'entrepôt, prédictions d'IA et alertes de stock en temps réel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
