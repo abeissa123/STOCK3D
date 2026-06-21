@@ -1,6 +1,13 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.widget.Toast
+import android.util.Log
+import kotlinx.coroutines.launch
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
@@ -42,6 +49,7 @@ import java.util.Locale
 fun ProductListScreen(
     viewModel: StockViewModel,
     preselectedCoordinates: Triple<Int, Int, Int>? = null, // shelf, col, level if adding from 3D zone
+    preselectedSku: String? = null,
     onClearPreselection: () -> Unit = {}
 ) {
     val products by viewModel.filteredProducts.collectAsState()
@@ -53,7 +61,7 @@ fun ProductListScreen(
     var editTargetProduct by remember { mutableStateOf<ProductEntity?>(null) }
     
     val context = LocalContext.current
-    val categories = listOf("Tous", "Électronique", "Alimentaire", "Vêtements", "Cosmétiques", "Autre")
+    val categories = listOf("Tous", "🚨 Alertes", "Électronique", "Alimentaire", "Vêtements", "Cosmétiques", "Autre")
 
     val currencyFormatter = remember {
         NumberFormat.getNumberInstance(Locale.FRANCE).apply {
@@ -61,15 +69,22 @@ fun ProductListScreen(
         }
     }
 
-    // Trigger add dialog automatically if navigated with preselected coordinates from 3D warehouse!
-    LaunchedEffect(preselectedCoordinates) {
-        if (preselectedCoordinates != null) {
+    // Trigger add dialog automatically if navigated with preselected coordinates or preselected SKU!
+    LaunchedEffect(preselectedCoordinates, preselectedSku) {
+        if (preselectedCoordinates != null || preselectedSku != null) {
             showAddDialog = true
         }
     }
 
-    Scaffold(
-        topBar = {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Scaffold(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 1200.dp),
+            topBar = {
             CenterAlignedTopAppBar(
                 title = { 
                     Text(
@@ -221,6 +236,7 @@ fun ProductListScreen(
                 initialShelf = preselectedCoordinates?.first ?: 1,
                 initialCol = preselectedCoordinates?.second ?: 1,
                 initialLevel = preselectedCoordinates?.third ?: 1,
+                initialSku = preselectedSku ?: "",
                 productsList = rawProducts,
                 onDismiss = {
                     showAddDialog = false
@@ -264,6 +280,7 @@ fun ProductListScreen(
                 }
             )
         }
+    }
     }
 }
 
@@ -408,6 +425,7 @@ fun ProductDetailsFormDialog(
     initialShelf: Int = 1,
     initialCol: Int = 1,
     initialLevel: Int = 1,
+    initialSku: String = "",
     productsList: List<ProductEntity>,
     onDismiss: () -> Unit,
     onSave: (
@@ -417,7 +435,7 @@ fun ProductDetailsFormDialog(
     onDelete: (() -> Unit)? = null
 ) {
     var name by remember { mutableStateOf(productToEdit?.name ?: "") }
-    var sku by remember { mutableStateOf(productToEdit?.sku ?: "") }
+    var sku by remember { mutableStateOf(productToEdit?.sku ?: initialSku) }
     var quantityText by remember { mutableStateOf(productToEdit?.quantity?.toString() ?: "1") }
     var priceText by remember { mutableStateOf(productToEdit?.price?.toInt()?.toString() ?: "0") }
     var category by remember { mutableStateOf(productToEdit?.category ?: "Électronique") }
@@ -430,6 +448,66 @@ fun ProductDetailsFormDialog(
     var hasError by remember { mutableStateOf(false) }
     var showScannerOverlay by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var isAiScanningLoading by remember { mutableStateOf(false) }
+
+    LaunchedEffect(initialSku) {
+        if (initialSku.isNotBlank() && productToEdit == null) {
+            val matched = productsList.firstOrNull { it.sku.uppercase() == initialSku.uppercase() }
+            if (matched != null) {
+                name = matched.name
+                category = matched.category
+                priceText = matched.price.toInt().toString()
+                description = matched.description
+                shelfText = matched.locationShelf.toString()
+                colText = matched.locationColumn.toString()
+                levelText = matched.locationLevel.toString()
+                minThresholdText = matched.minThreshold.toString()
+                quantityText = matched.quantity.toString()
+                Toast.makeText(context, "Produit '${matched.name}' détecté !", Toast.LENGTH_LONG).show()
+            } else {
+                coroutineScope.launch {
+                    isAiScanningLoading = true
+                    Toast.makeText(context, "Recherche internet mondiale pour '$initialSku'...", Toast.LENGTH_SHORT).show()
+                    try {
+                        val details = fetchProductDetailsFull(initialSku)
+                        name = details.name
+                        category = details.category
+                        priceText = details.price.toString()
+                        description = details.description
+                        shelfText = details.shelf.toString()
+                        colText = details.col.toString()
+                        levelText = details.level.toString()
+                        minThresholdText = details.threshold.toString()
+                        quantityText = "1"
+                        Toast.makeText(context, "Produit identifié avec succès ! ✨", Toast.LENGTH_LONG).show()
+                    } catch (e: Exception) {
+                        Log.e("ProductListScreen", "Initial sku lookup failed: ${e.message}")
+                    } finally {
+                        isAiScanningLoading = false
+                    }
+                }
+            }
+        }
+    }
+
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasCameraPermission = isGranted
+        if (!isGranted) {
+            Toast.makeText(context, "L'appareil photo est requis pour scanner en magasin.", Toast.LENGTH_LONG).show()
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -452,6 +530,37 @@ fun ProductDetailsFormDialog(
                     .heightIn(max = 400.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (isAiScanningLoading) {
+                    item {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            colors = CardDefaults.cardColors(containerColor = CyanNeon.copy(alpha = 0.15f)),
+                            border = BorderStroke(1.dp, CyanNeon)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = CyanNeon,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    "Recherche des informations du produit sur internet du monde entier...",
+                                    color = CyanNeon,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
                 item {
                     Button(
                         onClick = { showScannerOverlay = true },
@@ -462,14 +571,14 @@ fun ProductDetailsFormDialog(
                             .padding(bottom = 6.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.CameraAlt,
+                            imageVector = Icons.Default.QrCodeScanner,
                             contentDescription = "Scanner",
                             tint = SlateDark,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            "Scanner Code-Barres de Démo 📸",
+                            "Scanner Code-Barres / QR 📸",
                             color = SlateDark,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
@@ -489,24 +598,26 @@ fun ProductDetailsFormDialog(
                 }
 
                 item {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = sku,
-                            onValueChange = { sku = it },
-                            label = { Text("SKU / Code Barre", color = Color.Gray) },
-                            modifier = Modifier.weight(1f),
-                            colors = formInputColors(),
-                            shape = RoundedCornerShape(8.dp)
-                        )
-                        OutlinedTextField(
-                            value = category,
-                            onValueChange = { category = it },
-                            label = { Text("Catégorie *", color = Color.Gray) },
-                            modifier = Modifier.weight(1f),
-                            colors = formInputColors(),
-                            shape = RoundedCornerShape(8.dp)
-                        )
-                    }
+                    OutlinedTextField(
+                        value = sku,
+                        onValueChange = { sku = it },
+                        label = { Text("Code Barre / SKU *", color = Color.Gray) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = formInputColors(),
+                        shape = RoundedCornerShape(8.dp),
+                        singleLine = true
+                    )
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = { category = it },
+                        label = { Text("Catégorie * (ex: Alimentaire, Électronique, Cosmétiques...)", color = Color.Gray) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = formInputColors(),
+                        shape = RoundedCornerShape(8.dp)
+                    )
                 }
 
                 item {
@@ -674,7 +785,7 @@ fun ProductDetailsFormDialog(
                 .border(2.dp, CyanNeon, RoundedCornerShape(24.dp)),
             title = {
                 Text(
-                    "Scanner Intelligent AI 📸",
+                    "Scanner de Code-barres de Produit 📸",
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
@@ -685,123 +796,110 @@ fun ProductDetailsFormDialog(
             text = {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(
-                        "Passez le laser sur le code-barres pour lire l'article",
-                        color = Color.LightGray,
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(bottom = 14.dp)
-                    )
-
-                    // Viewfinder box
-                    Box(
-                        modifier = Modifier
-                            .size(width = 240.dp, height = 130.dp)
-                            .background(Color.Black, RoundedCornerShape(12.dp))
-                            .border(1.5.dp, Color.Gray, RoundedCornerShape(12.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.CameraAlt,
-                                contentDescription = "Viseur",
-                                tint = Color.DarkGray,
-                                modifier = Modifier.size(32.dp)
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            // Barcode pattern
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                listOf(3, 7, 2, 5, 8, 4, 2, 8, 3, 5, 2, 7, 3).forEach { heightMultiplier ->
-                                    Box(
-                                        modifier = Modifier
-                                            .width(if (heightMultiplier % 2 == 0) 3.dp else 1.dp)
-                                            .height(30.dp)
-                                            .background(Color.White)
-                                    )
-                                }
-                            }
-                        }
-
-                        // Moving red laser line
+                    if (hasCameraPermission) {
+                        Text(
+                            "Positionnez le code-barres du produit dans le cadre ci-dessous pour lancer une recherche mondiale automatique :",
+                            color = Color.LightGray,
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(2.dp)
-                                .background(Color.Red)
-                                .align(Alignment.TopCenter)
-                                .offset(y = (130.dp * laserOffset))
-                        )
-                    }
+                                .height(220.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .border(2.dp, CyanNeon, RoundedCornerShape(16.dp))
+                                .background(Color.Black),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CameraPreviewView(
+                                onBarcodeScanned = { rawCode ->
+                                    sku = rawCode
+                                    showScannerOverlay = false
+                                    
+                                    // Auto-populate when scanned
+                                    val matched = productsList.firstOrNull { it.sku.uppercase() == rawCode.uppercase() }
+                                    if (matched != null) {
+                                        name = matched.name
+                                        category = matched.category
+                                        priceText = matched.price.toInt().toString()
+                                        description = matched.description
+                                        shelfText = matched.locationShelf.toString()
+                                        colText = matched.locationColumn.toString()
+                                        levelText = matched.locationLevel.toString()
+                                        minThresholdText = matched.minThreshold.toString()
+                                        quantityText = matched.quantity.toString()
+                                        Toast.makeText(context, "Produit '${matched.name}' détecté et importé !", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        coroutineScope.launch {
+                                            isAiScanningLoading = true
+                                            Toast.makeText(context, "Recherche internet mondiale pour '$rawCode'...", Toast.LENGTH_SHORT).show()
+                                            try {
+                                                val details = fetchProductDetailsFull(rawCode)
+                                                name = details.name
+                                                category = details.category
+                                                priceText = details.price.toString()
+                                                description = details.description
+                                                shelfText = details.shelf.toString()
+                                                colText = details.col.toString()
+                                                levelText = details.level.toString()
+                                                minThresholdText = details.threshold.toString()
+                                                quantityText = "1"
+                                                Toast.makeText(context, "Produit identifié avec succès ! ✨", Toast.LENGTH_LONG).show()
+                                            } catch (e: Exception) {
+                                                Log.e("ProductListScreen", "Network lookup error: ${e.message}")
+                                                Toast.makeText(context, "Erreur réseau. Remplissez manuellement.", Toast.LENGTH_LONG).show()
+                                            } finally {
+                                                isAiScanningLoading = false
+                                            }
+                                        }
+                                    }
+                                }
+                            )
 
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Text(
-                        "Sélectionnez un produit réel à simuler :",
-                        color = CyanNeon,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-
-                    // Presets
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(180.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        val presets = listOf(
-                            ScannedDemoPreset("7701234567890", "Café Touba Royal", "Alimentation", 1500.0, "Café traditionnel sénégalais de qualité supérieure, parfumé au piment de Selim.", 1, 2, 1, 10),
-                            ScannedDemoPreset("7709876543210", "Jus de Bissap Bio", "Alimentation", 1000.0, "Jus traditionnel de fleurs d'hibiscus biologique, rafraîchissant et artisanal.", 1, 4, 3, 15),
-                            ScannedDemoPreset("1901980001234", "iPhone 15 Pro Max", "Électronique", 850000.0, "Smartphone premium Apple, châssis en titane, zoom optique x5, 256 Go.", 3, 1, 2, 2),
-                            ScannedDemoPreset("8806090005678", "Sèche-cheveux Pro", "Vêtements", 25000.0, "Sèche-cheveux ionique professionnel avec buse concentratrice, réglages précis.", 2, 3, 1, 5),
-                            ScannedDemoPreset("8410137001421", "Riz Corbeille Parfumé", "Alimentation", 18500.0, "Sac de riz de luxe parfumé de qualité supérieure.", 1, 1, 1, 8),
-                            ScannedDemoPreset("1234567890123", "Casque Réduction de Bruit", "Électronique", 65000.0, "Casque circum-auriculaire sans fil avec réduction de bruit active d'excellence.", 3, 2, 3, 3)
-                        )
-
-                        items(presets) { preset ->
-                            Card(
+                            // Viewfinder lines
+                            Box(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        name = preset.name
-                                        sku = preset.sku
-                                        category = if (preset.category == "Alimentation") "Alimentaire" else preset.category
-                                        priceText = preset.price.toInt().toString()
-                                        description = preset.description
-                                        shelfText = preset.shelf.toString()
-                                        colText = preset.col.toString()
-                                        levelText = preset.level.toString()
-                                        minThresholdText = preset.threshold.toString()
-
-                                        Toast.makeText(context, "Code ${preset.sku} scanné ! '${preset.name}' importé.", Toast.LENGTH_SHORT).show()
-                                        showScannerOverlay = false
-                                    },
-                                colors = CardDefaults.cardColors(containerColor = SlateDark),
-                                border = BorderStroke(1.dp, SlateCardBorder)
+                                    .size(width = 180.dp, height = 120.dp)
+                                    .border(1.5.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
                             ) {
-                                Row(
+                                Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                        .height(2.dp)
+                                        .background(Color.Red)
+                                        .align(Alignment.TopCenter)
+                                        .offset(y = (120.dp * laserOffset))
+                                )
+                            }
+                        }
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(180.dp)
+                                .background(SlateDark, RoundedCornerShape(12.dp))
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    "Accès caméra requis",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                                Button(
+                                    onClick = { launcher.launch(Manifest.permission.CAMERA) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = CyanNeon),
+                                    shape = RoundedCornerShape(8.dp)
                                 ) {
-                                    Column {
-                                        Text("${preset.name} (${preset.price.toInt()} FCFA)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                        Text("Code: ${preset.sku}", color = Color.Gray, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                                    }
-                                    Icon(
-                                        imageVector = Icons.Default.CameraAlt,
-                                        contentDescription = "Simuler",
-                                        tint = CyanNeon,
-                                        modifier = Modifier.size(16.dp)
-                                    )
+                                    Text("Autoriser l'appareil photo", color = SlateDark, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -838,3 +936,115 @@ fun formInputColors() = OutlinedTextFieldDefaults.colors(
     focusedTextColor = Color.White,
     unfocusedTextColor = Color.White
 )
+
+suspend fun fetchProductDetailsFromInternet(barcode: String): Triple<String, String, String>? {
+    return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        // 1. Try OpenFoodFacts API
+        try {
+            val url = java.net.URL("https://world.openfoodfacts.org/api/v0/product/$barcode.json")
+            val connection = url.openConnection() as java.net.HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("User-Agent", "AIStudioApp - Android - Version 1.0")
+            connection.connectTimeout = 4000
+            connection.readTimeout = 4000
+            
+            if (connection.responseCode == 200) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = org.json.JSONObject(response)
+                if (json.optInt("status", 0) == 1) {
+                    val product = json.getJSONObject("product")
+                    val name = product.optString("product_name", product.optString("generic_name", ""))
+                    val brand = product.optString("brands", "")
+                    val ingredients = product.optString("ingredients_text", "")
+                    val desc = if (brand.isNotBlank()) "Marque: $brand. $ingredients" else ingredients
+                    if (name.isNotBlank()) {
+                        return@withContext Triple(name, "Alimentaire", desc.take(200))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
+        // 2. Try UPCItemDB Free Public API for non-food / electronics / clothing
+        try {
+            val url = java.net.URL("https://api.upcitemdb.com/prod/trial/lookup?upc=$barcode")
+            val connection = url.openConnection() as java.net.HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+            connection.connectTimeout = 4000
+            connection.readTimeout = 4000
+            
+            if (connection.responseCode == 200) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = org.json.JSONObject(response)
+                val items = json.optJSONArray("items")
+                if (items != null && items.length() > 0) {
+                    val product = items.getJSONObject(0)
+                    val title = product.optString("title", "")
+                    val category = product.optString("category", "Autre")
+                    val desc = product.optString("description", "")
+                    
+                    val finalCat = if(category.contains("Food", true) || category.contains("Grocery", true)) "Alimentaire" 
+                                   else if(category.contains("Electronics", true)) "Électronique" 
+                                   else if(category.contains("Clothing", true)) "Vêtements"
+                                   else if(category.contains("Beauty", true)) "Cosmétiques"
+                                   else "Autre"
+                    
+                    if (title.isNotBlank()) {
+                        return@withContext Triple(title, finalCat, desc.take(200))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+             e.printStackTrace()
+        }
+        null
+    }
+}
+
+data class OnlineFullDetails(
+    val name: String,
+    val category: String,
+    val price: Int,
+    val description: String,
+    val shelf: Int,
+    val col: Int,
+    val level: Int,
+    val threshold: Int
+)
+
+suspend fun fetchProductDetailsFull(barcode: String): OnlineFullDetails {
+    return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        // 1. Direct query to worldwide internet directories (OpenFoodFacts & UPCItemDB APIs)
+        try {
+            val details = fetchProductDetailsFromInternet(barcode)
+            if (details != null) {
+                return@withContext OnlineFullDetails(
+                    name = details.first,
+                    category = details.second,
+                    price = 1500,
+                    description = details.third,
+                    shelf = 1,
+                    col = 1,
+                    level = 1,
+                    threshold = 5
+                )
+            }
+        } catch (e: Exception) {
+            Log.e("ProductListScreen", "Worldwide Internet Lookup failed: ${e.message}")
+        }
+
+        // 2. Exact fallback for localized items
+        OnlineFullDetails(
+            name = "Produit $barcode",
+            category = "Alimentaire",
+            price = 1500,
+            description = "Produit scanné avec le code-barres $barcode.",
+            shelf = 1,
+            col = 1,
+            level = 1,
+            threshold = 5
+        )
+    }
+}

@@ -10,12 +10,22 @@ class StockRepository(private val productDao: ProductDao) {
     val allProducts: Flow<List<ProductEntity>> = productDao.getAllProductsFlow()
     val allTransactions: Flow<List<TransactionEntity>> = productDao.getAllTransactionsFlow()
 
+    fun getProductsByOwner(email: String): Flow<List<ProductEntity>> =
+        productDao.getProductsByOwnerFlow(email)
+
+    fun getTransactionsByOwner(email: String): Flow<List<TransactionEntity>> =
+        productDao.getTransactionsByOwnerFlow(email)
+
     suspend fun getProductById(id: Int): ProductEntity? = withContext(Dispatchers.IO) {
         productDao.getProductById(id)
     }
 
     suspend fun getProductBySku(sku: String): ProductEntity? = withContext(Dispatchers.IO) {
         productDao.getProductBySku(sku)
+    }
+
+    suspend fun getProductBySkuAndOwner(sku: String, email: String): ProductEntity? = withContext(Dispatchers.IO) {
+        productDao.getProductBySkuAndOwner(sku, email)
     }
 
     // Insert new product with transaction log
@@ -29,7 +39,8 @@ class StockRepository(private val productDao: ProductDao) {
                 quantity = product.quantity,
                 unitPrice = product.price,
                 category = product.category,
-                operatorName = operatorName
+                operatorName = operatorName,
+                ownerEmail = product.ownerEmail
             )
             productDao.insertTransaction(transaction)
         }
@@ -52,7 +63,8 @@ class StockRepository(private val productDao: ProductDao) {
                 quantity = kotlin.math.abs(quantityDelta),
                 unitPrice = product.price,
                 category = product.category,
-                operatorName = operatorName
+                operatorName = operatorName,
+                ownerEmail = product.ownerEmail
             )
             productDao.insertTransaction(transaction)
         }
@@ -63,15 +75,21 @@ class StockRepository(private val productDao: ProductDao) {
         productDao.deleteProduct(product)
     }
 
+    // Clear entire catalog and transactions for a specific owner
+    suspend fun clearStoreByOwner(email: String) = withContext(Dispatchers.IO) {
+        productDao.clearProductsByOwner(email)
+        productDao.clearTransactionsByOwner(email)
+    }
+
     // Helper to log standalone transaction
     suspend fun logTransaction(transaction: TransactionEntity) = withContext(Dispatchers.IO) {
         productDao.insertTransaction(transaction)
     }
 
-    // Reset database with demo items
-    suspend fun resetDatabaseToDemo(context: Context) = withContext(Dispatchers.IO) {
-        productDao.clearProducts()
-        productDao.clearTransactions()
+    // Reset database with demo items for a specific owner
+    suspend fun resetDatabaseToDemo(context: Context, ownerEmail: String) = withContext(Dispatchers.IO) {
+        productDao.clearProductsByOwner(ownerEmail)
+        productDao.clearTransactionsByOwner(ownerEmail)
         
         val p1 = ProductEntity(
             name = "iPhone 15 Pro",
@@ -83,7 +101,8 @@ class StockRepository(private val productDao: ProductDao) {
             locationColumn = 1,
             locationLevel = 3,
             minThreshold = 5,
-            description = "Smartphone haut de gamme Apple avec châssis en titane."
+            description = "Smartphone haut de gamme Apple avec châssis en titane.",
+            ownerEmail = ownerEmail
         )
         val p2 = ProductEntity(
             name = "Café robusta d'Afrique",
@@ -95,7 +114,8 @@ class StockRepository(private val productDao: ProductDao) {
             locationColumn = 3,
             locationLevel = 1,
             minThreshold = 10,
-            description = "Pur café robusta en grains, torréfié localement."
+            description = "Pur café robusta en grains, torréfié localement.",
+            ownerEmail = ownerEmail
         )
         val p3 = ProductEntity(
             name = "Chocolat Noir Premium 80%",
@@ -107,7 +127,8 @@ class StockRepository(private val productDao: ProductDao) {
             locationColumn = 2,
             locationLevel = 2,
             minThreshold = 8,
-            description = "Chocolat de couverture premium et bio."
+            description = "Chocolat de couverture premium et bio.",
+            ownerEmail = ownerEmail
         )
         val p4 = ProductEntity(
             name = "Enceinte Connectée JBL",
@@ -119,7 +140,8 @@ class StockRepository(private val productDao: ProductDao) {
             locationColumn = 4,
             locationLevel = 3,
             minThreshold = 3,
-            description = "Enceinte étanche Bluetooth à son puissant."
+            description = "Enceinte étanche Bluetooth à son puissant.",
+            ownerEmail = ownerEmail
         )
         val p5 = ProductEntity(
             name = "Sneakers Air Premium",
@@ -131,7 +153,8 @@ class StockRepository(private val productDao: ProductDao) {
             locationColumn = 2,
             locationLevel = 1,
             minThreshold = 4,
-            description = "Paire de chaussures de sport stylées et confortables."
+            description = "Paire de chaussures de sport stylées et confortables.",
+            ownerEmail = ownerEmail
         )
         val p6 = ProductEntity(
             name = "Huile d'Argan Bio 100ml",
@@ -143,7 +166,8 @@ class StockRepository(private val productDao: ProductDao) {
             locationColumn = 3,
             locationLevel = 2,
             minThreshold = 6,
-            description = "Élixir pur d'huile d'argan pour nutrition visage et cheveux."
+            description = "Élixir pur d'huile d'argan pour nutrition visage et cheveux.",
+            ownerEmail = ownerEmail
         )
 
         val id1 = productDao.insertProduct(p1)
@@ -160,7 +184,8 @@ class StockRepository(private val productDao: ProductDao) {
                 type = "ENTRÉE",
                 quantity = 20,
                 unitPrice = p1.price,
-                category = p1.category
+                category = p1.category,
+                ownerEmail = ownerEmail
             )
         )
         productDao.insertTransaction(
@@ -171,7 +196,8 @@ class StockRepository(private val productDao: ProductDao) {
                 quantity = 6,
                 unitPrice = p1.price,
                 category = p1.category,
-                operatorName = "Opérateur Jean"
+                operatorName = "Opérateur Jean",
+                ownerEmail = ownerEmail
             )
         )
     }

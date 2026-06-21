@@ -13,7 +13,8 @@ data class TransactionEntity(
     val timestamp: Long = System.currentTimeMillis(),
     val operatorName: String = "Opérateur Jean",
     val unitPrice: Double, // Prix unitaire en FCFA lors de la transaction
-    val category: String // Catégorie du produit lors de la transaction pour les stats
+    val category: String, // Catégorie du produit lors de la transaction pour les stats
+    val ownerEmail: String = "operator.jean@stock3d.com"
 ) {
     val totalAmount: Double get() = quantity * unitPrice
 }

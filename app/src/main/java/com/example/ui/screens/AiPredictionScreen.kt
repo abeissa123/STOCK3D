@@ -30,8 +30,15 @@ fun AiPredictionScreen(
     val predictionResult by viewModel.aiPredictionResult.collectAsState()
     val isAiLoading by viewModel.isAiLoading.collectAsState()
 
-    Scaffold(
-        topBar = {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Scaffold(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 1200.dp),
+            topBar = {
             CenterAlignedTopAppBar(
                 title = { 
                     Text(
@@ -214,5 +221,6 @@ fun AiPredictionScreen(
                 }
             }
         }
+    }
     }
 }

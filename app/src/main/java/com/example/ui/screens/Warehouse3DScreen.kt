@@ -58,8 +58,15 @@ fun Warehouse3DScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Scaffold(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 1200.dp),
+            topBar = {
             CenterAlignedTopAppBar(
                 title = { 
                     Text(
@@ -391,6 +398,7 @@ fun Warehouse3DScreen(
                 }
             )
         }
+    }
     }
 }
 

@@ -1,6 +1,10 @@
 package com.example.ui
 
 import android.content.Context
+import android.graphics.pdf.PdfDocument
+import android.graphics.Paint
+import android.graphics.Canvas
+import android.graphics.Color as AndroidColor
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -9,6 +13,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileWriter
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -17,12 +22,101 @@ class StockViewModel(
     private val context: Context
 ) : ViewModel() {
 
+    // --- Authentication ---
+    val authService = AuthService(context)
+    val isLoggedIn = authService.isLoggedIn
+    val userEmail = authService.userEmail
+
+    // --- Helper for Operator Names ---
+    fun getCurrentOperator(): String {
+        val email = userEmail.value ?: return "Opérateur Jean"
+        val part = email.substringBefore("@")
+        return "Opérateur " + part.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
+    }
+
     // --- Flows from Room DB ---
-    val productsFlow: StateFlow<List<ProductEntity>> = repository.allProducts
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val productsFlow: StateFlow<List<ProductEntity>> = userEmail
+        .flatMapLatest { email ->
+            val activeEmail = email ?: "operator.jean@stock3d.com"
+            repository.getProductsByOwner(activeEmail)
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val transactionsFlow: StateFlow<List<TransactionEntity>> = repository.allTransactions
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val transactionsFlow: StateFlow<List<TransactionEntity>> = userEmail
+        .flatMapLatest { email ->
+            val activeEmail = email ?: "operator.jean@stock3d.com"
+            repository.getTransactionsByOwner(activeEmail)
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // --- Active Visual Alerts for Low Stock/Rupture ---
+    private val _activeAlerts = MutableStateFlow<List<ProductEntity>>(emptyList())
+    val activeAlerts: StateFlow<List<ProductEntity>> = _activeAlerts.asStateFlow()
+    private val dismissedAlertIds = Collections.synchronizedSet(mutableSetOf<Int>())
+
+    init {
+        viewModelScope.launch {
+            userEmail.collect { email ->
+                val activeEmail = email ?: "operator.jean@stock3d.com"
+                if (activeEmail == "operator.jean@stock3d.com") {
+                    // Check if default user has products, if not seed it so the app is instantly testable
+                    repository.getProductsByOwner(activeEmail).firstOrNull()?.let { list ->
+                        if (list.isEmpty()) {
+                            repository.resetDatabaseToDemo(context, activeEmail)
+                            pushNotification("Bienvenue ! Votre boutique de démonstration a été initialisée avec des produits modèles.")
+                        }
+                    }
+                } else {
+                    // For brand-new custom stores, we leave the catalog fully EMPTY (zero articles)
+                    // so the user can insert their own articles.
+                    repository.getProductsByOwner(activeEmail).firstOrNull()?.let { list ->
+                        if (list.isEmpty()) {
+                            pushNotification("Félicitations pour votre nouvelle boutique ! Votre catalogue est vide pour commencer à insérer vos propres articles.")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Monitoring of stock levels for real-time visual alerts
+        viewModelScope.launch {
+            productsFlow.collect { list ->
+                list.forEach { prod ->
+                    if (prod.isOutOfStock() || prod.isLowStock()) {
+                        val existingAlert = _activeAlerts.value.firstOrNull { it.id == prod.id }
+                        val qtyChanged = existingAlert != null && existingAlert.quantity != prod.quantity
+                        
+                        if (qtyChanged) {
+                            dismissedAlertIds.remove(prod.id)
+                        }
+
+                        if (!dismissedAlertIds.contains(prod.id)) {
+                            _activeAlerts.update { current ->
+                                if (current.any { it.id == prod.id }) {
+                                    current.map { if (it.id == prod.id) prod else it }
+                                } else {
+                                    current + prod
+                                }
+                            }
+                        }
+                    } else {
+                        dismissedAlertIds.remove(prod.id)
+                        _activeAlerts.update { current -> current.filter { it.id != prod.id } }
+                    }
+                }
+                // Handle deletion
+                val currentIds = list.map { it.id }.toSet()
+                _activeAlerts.update { current -> current.filter { it.id in currentIds } }
+            }
+        }
+    }
+
+    fun dismissAlert(productId: Int) {
+        dismissedAlertIds.add(productId)
+        _activeAlerts.update { list -> list.filter { it.id != productId } }
+    }
 
     // --- UI Filters and Statuses ---
     private val _selectedCategoryFilter = MutableStateFlow("Tous")
@@ -53,7 +147,11 @@ class StockViewModel(
         _searchQuery
     ) { products, category, query ->
         products.filter { product ->
-            val matchesCategory = category == "Tous" || product.category.equals(category, ignoreCase = true)
+            val matchesCategory = when {
+                category == "Tous" -> true
+                category.contains("alert", ignoreCase = true) -> product.isLowStock() || product.isOutOfStock()
+                else -> product.category.equals(category, ignoreCase = true)
+            }
             val matchesQuery = query.isEmpty() || 
                     product.name.contains(query, ignoreCase = true) || 
                     product.sku.contains(query, ignoreCase = true) || 
@@ -99,6 +197,8 @@ class StockViewModel(
     ) {
         viewModelScope.launch {
             val formattedSku = sku.ifBlank { "STK-" + (10000..99999).random() }
+            val activeEmail = userEmail.value ?: "operator.jean@stock3d.com"
+            val activeOperator = if (operator == "Opérateur Jean") getCurrentOperator() else operator
             val newProduct = ProductEntity(
                 sku = formattedSku,
                 name = name,
@@ -109,22 +209,24 @@ class StockViewModel(
                 locationColumn = locationColumn,
                 locationLevel = locationLevel,
                 minThreshold = minThreshold,
-                description = description
+                description = description,
+                ownerEmail = activeEmail
             )
-            repository.addProduct(newProduct, operator)
-            pushNotification("Nouveau produit ajouté : $name ($formattedSku) au Rayon $locationShelf")
+            repository.addProduct(newProduct, activeOperator)
+            pushNotification("Nouveau produit d'article ajouté : $name ($formattedSku) au Rayon $locationShelf")
             checkThresholds()
         }
     }
 
     fun updateProductQty(product: ProductEntity, delta: Int, operator: String = "Opérateur Jean") {
         viewModelScope.launch {
+            val activeOperator = if (operator == "Opérateur Jean") getCurrentOperator() else operator
             val newQty = (product.quantity + delta).coerceAtLeast(0)
             val updated = product.copy(
                 quantity = newQty,
                 exitDate = if (delta < 0) System.currentTimeMillis() else product.exitDate
             )
-            repository.updateProductWithTransaction(updated, delta, operator)
+            repository.updateProductWithTransaction(updated, delta, activeOperator)
             
             val action = if (delta > 0) "approvisionné de +$delta unités" else "déstocké de $delta unités"
             pushNotification("Produit ${product.name} $action. Stock actuel : $newQty")
@@ -134,6 +236,7 @@ class StockViewModel(
 
     fun registerSale(items: List<Pair<ProductEntity, Int>>, operator: String = "Opérateur Jean") {
         viewModelScope.launch {
+            val activeOperator = if (operator == "Opérateur Jean") getCurrentOperator() else operator
             var totalAmount = 0.0
             items.forEach { (prod, qtyToSell) ->
                 val newQty = (prod.quantity - qtyToSell).coerceAtLeast(0)
@@ -142,22 +245,23 @@ class StockViewModel(
                     exitDate = System.currentTimeMillis()
                 )
                 // qtyDelta is negative for stock exits
-                repository.updateProductWithTransaction(updated, -qtyToSell, operator)
+                repository.updateProductWithTransaction(updated, -qtyToSell, activeOperator)
                 totalAmount += qtyToSell * prod.price
             }
             val totalFormatted = String.format(Locale.FRANCE, "%,.0f", totalAmount).replace(",", " ")
-            pushNotification("Vente validée : $totalFormatted FCFA encaissés. Stock mis à jour.")
+            pushNotification("Vente validée par $activeOperator : $totalFormatted FCFA encaissés. Stock mis à jour.")
             checkThresholds()
         }
     }
 
     fun updateProductDetails(product: ProductEntity, operator: String = "Opérateur Jean") {
         viewModelScope.launch {
+            val activeOperator = if (operator == "Opérateur Jean") getCurrentOperator() else operator
             // Check delta
             val oldProduct = repository.getProductById(product.id)
             if (oldProduct != null) {
                 val delta = product.quantity - oldProduct.quantity
-                repository.updateProductWithTransaction(product, delta, operator)
+                repository.updateProductWithTransaction(product, delta, activeOperator)
                 pushNotification("Détails mis à jour pour : ${product.name}")
                 checkThresholds()
             }
@@ -182,8 +286,14 @@ class StockViewModel(
     // Reset database
     fun resetDatabase() {
         viewModelScope.launch {
-            repository.resetDatabaseToDemo(context)
-            pushNotification("Données et historique de stock réinitialisés à l'état de démonstration.")
+            val activeEmail = userEmail.value ?: "operator.jean@stock3d.com"
+            if (activeEmail == "operator.jean@stock3d.com") {
+                repository.resetDatabaseToDemo(context, activeEmail)
+                pushNotification("Données et historique de stock réinitialisés à l'état de démonstration.")
+            } else {
+                repository.clearStoreByOwner(activeEmail)
+                pushNotification("Toutes les données de votre boutique ont été effacées. Stock réinitialisé à zéro.")
+            }
         }
     }
 
@@ -203,7 +313,8 @@ class StockViewModel(
     // --- Barcode simulator ---
     fun simulateBarcodeScan(barcode: String, onMatched: (ProductEntity) -> Unit, onNotFound: () -> Unit) {
         viewModelScope.launch {
-            val found = repository.getProductBySku(barcode)
+            val activeEmail = userEmail.value ?: "operator.jean@stock3d.com"
+            val found = repository.getProductBySkuAndOwner(barcode, activeEmail)
             if (found != null) {
                 onMatched(found)
             } else {
@@ -244,6 +355,266 @@ class StockViewModel(
             pushNotification("Échec de l'exportation du rapport CSV: ${e.message}")
             null
         }
+    }
+
+    // --- High-Fidelity PDF Exportation ---
+    fun exportStockToPDF(): String? {
+        val products = productsFlow.value
+        val alerts = products.filter { it.isOutOfStock() || it.isLowStock() }
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault())
+        val timestamp = dateFormat.format(Date())
+        val filename = "Rapport_Stock3D_$timestamp.pdf"
+        
+        return try {
+            val path = context.getExternalFilesDir(null)
+            val file = File(path, filename)
+            val pdfDocument = PdfDocument()
+            
+            // A4 size: 595 x 842 points (at 72 dpi)
+            val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create()
+            var page = pdfDocument.startPage(pageInfo)
+            var canvas = page.canvas
+            
+            val paint = Paint()
+            val textPaint = Paint()
+            val boldPaint = Paint()
+            
+            // Palette Colors
+            val primaryColor = 0xFF151922.toInt() // Deep Slate Dark
+            val accentColor = 0xFF00E5FF.toInt() // CyanNeon
+            val alertColor = 0xFFFF5252.toInt() // Crimson/Red
+            val warningColor = 0xFFFFAB40.toInt() // Orange
+            val darkGray = 0xFF444444.toInt()
+            val lightGray = 0xFFF0F2F5.toInt()
+            
+            fun drawHeader(pageNumber: Int) {
+                // Header Banner Box
+                paint.color = primaryColor
+                canvas.drawRect(0f, 0f, 595f, 85f, paint)
+                
+                // Accent Bar
+                paint.color = accentColor
+                canvas.drawRect(0f, 81f, 595f, 85f, paint)
+                
+                // Title
+                boldPaint.color = AndroidColor.WHITE
+                boldPaint.textSize = 16f
+                boldPaint.isFakeBoldText = true
+                canvas.drawText("RAPPORT D'INVENTAIRE - STOCK3D", 30f, 40f, boldPaint)
+                
+                // Subtitle / Date / User Info
+                textPaint.color = 0xFFB0BEC5.toInt()
+                textPaint.textSize = 9f
+                val activeEmail = userEmail.value ?: "operator.jean@stock3d.com"
+                canvas.drawText("Généré le: ${SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date())}  |  Utilisateur: $activeEmail", 30f, 58f, textPaint)
+                canvas.drawText("Position d'entrepôt virtuelle 3D synchronisée en temps réel", 30f, 72f, textPaint)
+                
+                // Page Tag
+                textPaint.color = AndroidColor.WHITE
+                canvas.drawText("PAGE $pageNumber", 515f, 40f, textPaint)
+            }
+            
+            var currentPageNum = 1
+            drawHeader(currentPageNum)
+            var yPosition = 120f
+            
+            // SECTION 1: ALERTES CRITIQUES
+            boldPaint.color = primaryColor
+            boldPaint.textSize = 12f
+            boldPaint.isFakeBoldText = true
+            canvas.drawText("1. SITUATION DES ALERTES DE STOCK", 30f, yPosition, boldPaint)
+            yPosition += 15f
+            
+            paint.color = primaryColor
+            paint.strokeWidth = 1f
+            canvas.drawLine(30f, yPosition - 5f, 565f, yPosition - 5f, paint)
+            
+            textPaint.textSize = 9.5f
+            textPaint.color = AndroidColor.BLACK
+            
+            if (alerts.isEmpty()) {
+                textPaint.color = 0xFF2E7D32.toInt() // Green Dark
+                boldPaint.color = 0xFF2E7D32.toInt()
+                boldPaint.textSize = 10f
+                canvas.drawText("✓ Aucune alerte de stock en cours. Tous les articles sont opérationnels.", 30f, yPosition, boldPaint)
+                yPosition += 30f
+            } else {
+                // Draw alerts table header background
+                paint.color = lightGray
+                canvas.drawRect(30f, yPosition - 10f, 565f, yPosition + 10f, paint)
+                
+                // Draw alerts table header text
+                boldPaint.textSize = 8.5f
+                boldPaint.color = primaryColor
+                canvas.drawText("SKU", 35f, yPosition + 3f, boldPaint)
+                canvas.drawText("NOM DE L'ARTICLE", 100f, yPosition + 3f, boldPaint)
+                canvas.drawText("CATÉGORIE", 250f, yPosition + 3f, boldPaint)
+                canvas.drawText("QTY / SEUIL", 350f, yPosition + 3f, boldPaint)
+                canvas.drawText("STATUT", 440f, yPosition + 3f, boldPaint)
+                canvas.drawText("LOCALISATION", 500f, yPosition + 3f, boldPaint)
+                
+                yPosition += 25f
+                
+                alerts.forEach { prod ->
+                    val isRupture = prod.quantity <= 0
+                    
+                    textPaint.color = AndroidColor.BLACK
+                    canvas.drawText(prod.sku, 35f, yPosition, textPaint)
+                    
+                    val dispName = if (prod.name.length > 21) prod.name.take(19) + "..." else prod.name
+                    canvas.drawText(dispName, 100f, yPosition, textPaint)
+                    canvas.drawText(prod.category, 250f, yPosition, textPaint)
+                    
+                    canvas.drawText("${prod.quantity} / ${prod.minThreshold}", 350f, yPosition, textPaint)
+                    
+                    // Style the Status Text based on stock state
+                    boldPaint.textSize = 8.5f
+                    if (isRupture) {
+                        boldPaint.color = alertColor
+                        canvas.drawText("RUPTURE", 440f, yPosition, boldPaint)
+                    } else {
+                        boldPaint.color = warningColor
+                        canvas.drawText("STOCK BAS", 440f, yPosition, boldPaint)
+                    }
+                    
+                    textPaint.color = darkGray
+                    canvas.drawText("R:${prod.locationShelf} C:${prod.locationColumn} N:${prod.locationLevel}", 500f, yPosition, textPaint)
+                    
+                    // Row separator
+                    paint.color = 0xFFE0E0E0.toInt()
+                    canvas.drawLine(30f, yPosition + 5f, 565f, yPosition + 5f, paint)
+                    
+                    yPosition += 18f
+                    
+                    // Multi-page layout protection
+                    if (yPosition > 770f) {
+                        pdfDocument.finishPage(page)
+                        currentPageNum++
+                        page = pdfDocument.startPage(pageInfo)
+                        canvas = page.canvas
+                        drawHeader(currentPageNum)
+                        yPosition = 120f
+                    }
+                }
+                yPosition += 15f
+            }
+            
+            // SECTION 2: ÉTAT GLOBAL DE L'INVENTAIRE
+            if (yPosition > 700f) {
+                pdfDocument.finishPage(page)
+                currentPageNum++
+                page = pdfDocument.startPage(pageInfo)
+                canvas = page.canvas
+                drawHeader(currentPageNum)
+                yPosition = 120f
+            }
+            
+            boldPaint.color = primaryColor
+            boldPaint.textSize = 12f
+            boldPaint.isFakeBoldText = true
+            canvas.drawText("2. ÉTAT DÉTAILLÉ DE L'INVENTAIRE GLOBAL", 30f, yPosition, boldPaint)
+            yPosition += 15f
+            
+            paint.color = primaryColor
+            paint.strokeWidth = 1f
+            canvas.drawLine(30f, yPosition - 5f, 565f, yPosition - 5f, paint)
+            
+            // Inventory table header background
+            paint.color = lightGray
+            canvas.drawRect(30f, yPosition - 10f, 565f, yPosition + 10f, paint)
+            
+            // Inventory table header text
+            boldPaint.textSize = 8.5f
+            boldPaint.color = primaryColor
+            canvas.drawText("SKU", 35f, yPosition + 3f, boldPaint)
+            canvas.drawText("PRODUIT", 100f, yPosition + 3f, boldPaint)
+            canvas.drawText("CATÉGORIE", 250f, yPosition + 3f, boldPaint)
+            canvas.drawText("QUANTITÉ", 350f, yPosition + 3f, boldPaint)
+            canvas.drawText("PRIX UNITAIRE", 430f, yPosition + 3f, boldPaint)
+            canvas.drawText("VALEUR (FCFA)", 500f, yPosition + 3f, boldPaint)
+            
+            yPosition += 25f
+            
+            val doubleFormatter = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
+            
+            products.forEach { prod ->
+                textPaint.color = AndroidColor.BLACK
+                textPaint.textSize = 9f
+                canvas.drawText(prod.sku, 35f, yPosition, textPaint)
+                
+                val dispName = if (prod.name.length > 21) prod.name.take(19) + "..." else prod.name
+                canvas.drawText(dispName, 100f, yPosition, textPaint)
+                canvas.drawText(prod.category, 250f, yPosition, textPaint)
+                
+                canvas.drawText(prod.quantity.toString(), 350f, yPosition, textPaint)
+                canvas.drawText("${prod.price.toLong()} F", 430f, yPosition, textPaint)
+                
+                val totalValue = (prod.quantity * prod.price).toLong()
+                canvas.drawText("$totalValue F", 500f, yPosition, textPaint)
+                
+                // Row separator
+                paint.color = 0xFFE0E0E0.toInt()
+                canvas.drawLine(30f, yPosition + 5f, 565f, yPosition + 5f, paint)
+                
+                yPosition += 18f
+                
+                // Pagination check
+                if (yPosition > 770f) {
+                    pdfDocument.finishPage(page)
+                    currentPageNum++
+                    page = pdfDocument.startPage(pageInfo)
+                    canvas = page.canvas
+                    drawHeader(currentPageNum)
+                    yPosition = 120f
+                }
+            }
+            
+            // Draw summary metrics box at the very end
+            if (yPosition > 700f) {
+                pdfDocument.finishPage(page)
+                currentPageNum++
+                page = pdfDocument.startPage(pageInfo)
+                canvas = page.canvas
+                drawHeader(currentPageNum)
+                yPosition = 120f
+            }
+            
+            yPosition += 15f
+            paint.color = lightGray
+            canvas.drawRect(30f, yPosition, 565f, yPosition + 45f, paint)
+            
+            boldPaint.color = primaryColor
+            boldPaint.textSize = 9.5f
+            boldPaint.isFakeBoldText = true
+            
+            val totalQty = products.sumOf { it.quantity }
+            val totalValue = products.sumOf { it.quantity * it.price }.toLong()
+            
+            canvas.drawText("SYMTHÈSE DU RAPPORT : ", 40f, yPosition + 18f, boldPaint)
+            
+            textPaint.color = AndroidColor.BLACK
+            textPaint.textSize = 9.5f
+            canvas.drawText("Nombre d'articles : $totalQty unités  |  Valeur totale active du stock : $totalValue FCFA  |  Alertes actives : ${alerts.size}", 40f, yPosition + 33f, textPaint)
+            
+            pdfDocument.finishPage(page)
+            
+            val outputStream = FileOutputStream(file)
+            pdfDocument.writeTo(outputStream)
+            pdfDocument.close()
+            outputStream.flush()
+            outputStream.close()
+            
+            pushNotification("Rapport de stock PDF exporté : $filename")
+            file.absolutePath
+        } catch (e: Exception) {
+            pushNotification("Échec de l'exportation du rapport PDF: ${e.message}")
+            null
+        }
+    }
+
+    // --- Refresh Application State ---
+    fun refreshApp() {
+        pushNotification("Application de stock actualisée avec succès. Visualisations 3D en temps réel synchronisées.")
     }
 
     // --- Gemini Predictive AI Stock Analysis ---

@@ -12,6 +12,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -148,14 +150,26 @@ fun SalesScreen(
         val listToRegister = cartItems.map { Pair(it.product, it.quantity) }
         viewModel.registerSale(listToRegister)
         
+        val rawEmail = viewModel.userEmail.value ?: "operator.jean@stock3d.com"
+        val shopPrefix = rawEmail.substringBefore("@").replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
+        val finalStoreName = "BOUTIQUE $shopPrefix".uppercase(Locale.getDefault())
+
         // Save current receipt data before clearing
+        val currentOperator = viewModel.getCurrentOperator()
+        val hashValue = currentOperator.hashCode().let { if (it < 0) -it else it }
+        val operatorPhonePart = 650000000 + (hashValue % 49000000)
+        val finalOperatorPhone = "+237 $operatorPhonePart"
+
         lastReceiptData = ReceiptData(
             id = "REC-" + (1000..9999).random() + "-" + (10..99).random(),
             date = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date()),
             items = cartItems,
             total = totalAmount,
             cashReceived = cashReceived,
-            change = changeToReturn
+            change = changeToReturn,
+            operatorName = currentOperator,
+            storeName = finalStoreName,
+            operatorPhone = finalOperatorPhone
         )
         
         // Reset states
@@ -164,8 +178,15 @@ fun SalesScreen(
         showReceiptDialog = true
     }
 
-    Scaffold(
-        topBar = {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Scaffold(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 1200.dp),
+            topBar = {
             CenterAlignedTopAppBar(
                 title = {
                     Text(
@@ -308,14 +329,19 @@ fun SalesScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        "STOCK3D BOUTIQUE",
+                        receipt.storeName,
                         fontWeight = FontWeight.Black,
                         color = CyanNeon,
                         fontSize = 14.sp
                     )
                     Text(
-                        "Dakar, Sénégal",
+                        "FIGUIL-cameroun",
                         color = Color.Gray,
+                        fontSize = 11.sp
+                    )
+                    Text(
+                        receipt.operatorName,
+                        color = Color.LightGray,
                         fontSize = 11.sp
                     )
                     
@@ -455,6 +481,7 @@ fun SalesScreen(
                 }
             }
         )
+    }
     }
 }
 
@@ -640,192 +667,366 @@ fun CheckoutPane(
     onValidateSale: () -> Unit,
     formatCurrency: (Double) -> String
 ) {
-    Card(
-        modifier = Modifier.fillMaxSize(),
-        colors = CardDefaults.cardColors(containerColor = SlateMedium),
-        border = BorderStroke(1.dp, SlateCardBorder)
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                "Panier Actuel",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = Color.White,
-                modifier = Modifier.padding(bottom = 10.dp)
-            )
-            
-            // Cart Listed Items
-            if (cartItems.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.ShoppingCart, contentDescription = "Cart Empty", tint = Color.Gray, modifier = Modifier.size(52.dp))
-                        Spacer(modifier = Modifier.height(10.dp))
+    var showConfirmDialog by remember { mutableStateOf(false) }
+
+    if (showConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfirmDialog = false },
+            containerColor = SlateMedium,
+            modifier = Modifier
+                .border(2.dp, EmeraldGlow, RoundedCornerShape(24.dp)),
+            shape = RoundedCornerShape(24.dp),
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.HelpOutline, 
+                        contentDescription = null, 
+                        tint = EmeraldGlow, 
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        "Confirmer la vente", 
+                        color = Color.White, 
+                        fontWeight = FontWeight.Bold, 
+                        fontSize = 18.sp
+                    )
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        "Voulez-vous valider et enregistrer cette transaction de vente ?",
+                        color = Color.LightGray,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(SlateDark, RoundedCornerShape(8.dp))
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Montant Total :", color = Color.Gray, fontSize = 13.sp)
                         Text(
-                            "Le panier est vide.",
-                            color = Color.LightGray,
-                            fontSize = 13.sp
+                            formatCurrency(totalAmount), 
+                            color = CyanNeon, 
+                            fontWeight = FontWeight.Bold, 
+                            fontSize = 15.sp
                         )
-                        Text(
-                            "Sélectionnez des produits à gauche pour débuter.",
-                            color = Color.Gray,
-                            fontSize = 11.sp
-                        )
+                    }
+                    val cashRec = cashReceivedText.toDoubleOrNull() ?: 0.0
+                    if (cashRec > 0) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(SlateDark, RoundedCornerShape(8.dp))
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Argent Reçu :", color = Color.Gray, fontSize = 13.sp)
+                            Text(
+                                formatCurrency(cashRec), 
+                                color = Color.White, 
+                                fontWeight = FontWeight.Bold, 
+                                fontSize = 15.sp
+                            )
+                        }
+                        if (cashRec >= totalAmount) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(SlateDark, RoundedCornerShape(8.dp))
+                                    .padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Monnaie à Rendre :", color = Color.Gray, fontSize = 13.sp)
+                                Text(
+                                    formatCurrency(cashRec - totalAmount), 
+                                    color = EmeraldGlow, 
+                                    fontWeight = FontWeight.Black, 
+                                    fontSize = 15.sp
+                                )
+                            }
+                        }
                     }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showConfirmDialog = false
+                        onValidateSale()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldGlow)
                 ) {
-                    items(cartItems) { item ->
-                        CartListItem(
-                            item = item,
-                            onDecrease = { onDecreaseQty(item) },
-                            onIncrease = { onIncreaseQty(item) },
-                            onDelete = { onRemoveItem(item) },
-                            formatCurrency = formatCurrency
-                        )
-                    }
+                    Text("Oui, finaliser", color = SlateDark, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmDialog = false }) {
+                    Text("Annuler", color = Color.LightGray)
                 }
             }
-            
-            Divider(color = SlateCardBorder, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
-            
-            // Total & Calculation
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(SlateDark, RoundedCornerShape(12.dp))
-                    .padding(14.dp)
-            ) {
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
+        // --- 1. CADRE PANIER ACTUEL ---
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = SlateMedium),
+            border = BorderStroke(1.dp, SlateCardBorder)
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("TOTAL À ENCAISSER", color = Color.LightGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        formatCurrency(totalAmount),
-                        color = CyanNeon,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Black
+                        "Panier Actuel",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
                     )
+                    Badge(
+                        containerColor = CyanNeon,
+                        contentColor = SlateDark
+                    ) {
+                        val totalQty = cartItems.sumOf { it.quantity }
+                        Text(
+                            "$totalQty " + if (totalQty > 1) "articles" else "article", 
+                            fontWeight = FontWeight.Black, 
+                            modifier = Modifier.padding(2.dp)
+                        )
+                    }
                 }
                 
-                Spacer(modifier = Modifier.height(10.dp))
-                
-                // Keyboard and client collection
-                OutlinedTextField(
-                    value = cashReceivedText,
-                    onValueChange = onCashReceivedChange,
-                    placeholder = { Text("Argent reçu (FCFA)...", color = Color.Gray) },
-                    leadingIcon = { Icon(Icons.Default.Payments, contentDescription = "Encaisser", tint = Color.Gray) },
-                    trailingIcon = {
-                        TextButton(
-                            onClick = { onCashReceivedChange(totalAmount.toInt().toString()) },
-                            enabled = totalAmount > 0
-                        ) {
-                            Text("MONTANT EXACT", color = CyanNeon, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = CyanNeon,
-                        unfocusedBorderColor = SlateCardBorder,
-                        focusedContainerColor = SlateMedium,
-                        unfocusedContainerColor = SlateMedium
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true
-                )
-                
-                // Add Quick Sum buttons
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    listOf(1000, 5000, 10000, 20000).forEach { sum ->
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .background(SlateMedium, RoundedCornerShape(6.dp))
-                                .border(0.5.dp, SlateCardBorder, RoundedCornerShape(6.dp))
-                                .clickable {
-                                    val currentVal = cashReceivedText.toIntOrNull() ?: 0
-                                    onCashReceivedChange((currentVal + sum).toString())
-                                }
-                                .padding(vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
+                // Cart Listed Items
+                if (cartItems.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 40.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.ShoppingCart, contentDescription = "Cart Empty", tint = Color.Gray, modifier = Modifier.size(48.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
                             Text(
-                                "+${sum / 1000}k",
+                                "Le panier est vide.",
                                 color = Color.LightGray,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                "Sélectionnez des produits à gauche.",
+                                color = Color.Gray,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                } else {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        cartItems.forEach { item ->
+                            CartListItem(
+                                item = item,
+                                onDecrease = { onDecreaseQty(item) },
+                                onIncrease = { onIncreaseQty(item) },
+                                onDelete = { onRemoveItem(item) },
+                                formatCurrency = formatCurrency
                             )
                         }
                     }
                 }
-                
-                // Return calculation display
-                val cashReceivedNum = cashReceivedText.toDoubleOrNull() ?: 0.0
-                if (totalAmount > 0) {
-                    Spacer(modifier = Modifier.height(10.dp))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // --- 2. CADRE REGLEMENT & FACTURATION ---
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = SlateMedium),
+            border = BorderStroke(1.dp, SlateCardBorder)
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Note de Règlement",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                // Total & Calculation
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(SlateDark, RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Monnaie à rendre", color = Color.LightGray, fontSize = 12.sp)
-                        val isEnough = cashReceivedNum >= totalAmount
-                        val valColor = if (isEnough) EmeraldGlow else CrimsonRed
+                        Text("TOTAL À ENCAISSER", color = Color.LightGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Text(
-                            if (isEnough) formatCurrency(cashReceivedNum - totalAmount) else "Montant insuffisant",
-                            color = valColor,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                            formatCurrency(totalAmount),
+                            color = CyanNeon,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Black
                         )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    // Keyboard and client collection
+                    OutlinedTextField(
+                        value = cashReceivedText,
+                        onValueChange = onCashReceivedChange,
+                        placeholder = { Text("Argent reçu (FCFA)...", color = Color.Gray) },
+                        leadingIcon = { Icon(Icons.Default.Payments, contentDescription = "Encaisser", tint = Color.Gray) },
+                        trailingIcon = {
+                            TextButton(
+                                onClick = { onCashReceivedChange(totalAmount.toInt().toString()) },
+                                enabled = totalAmount > 0
+                            ) {
+                                Text("MONTANT EXACT", color = CyanNeon, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = CyanNeon,
+                            unfocusedBorderColor = SlateCardBorder,
+                            focusedContainerColor = SlateMedium,
+                            unfocusedContainerColor = SlateMedium
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true
+                    )
+                    
+                    // Add Quick Sum buttons
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(1000, 5000, 10000, 20000).forEach { sum ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .background(SlateMedium, RoundedCornerShape(6.dp))
+                                    .border(0.5.dp, SlateCardBorder, RoundedCornerShape(6.dp))
+                                    .clickable {
+                                        val currentVal = cashReceivedText.toIntOrNull() ?: 0
+                                        onCashReceivedChange((currentVal + sum).toString())
+                                    }
+                                    .padding(vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "+${sum / 1000}k",
+                                    color = Color.LightGray,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                    
+                    // Return calculation display
+                    val cashReceivedNum = cashReceivedText.toDoubleOrNull() ?: 0.0
+                    if (totalAmount > 0) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Monnaie à rendre", color = Color.LightGray, fontSize = 12.sp)
+                            val isEnough = cashReceivedNum >= totalAmount
+                            val valColor = if (isEnough) EmeraldGlow else CrimsonRed
+                            Text(
+                                if (isEnough) formatCurrency(cashReceivedNum - totalAmount) else "Montant insuffisant",
+                                color = valColor,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
                     }
                 }
             }
-            
-            Spacer(modifier = Modifier.height(14.dp))
-            
-            // Validate Button
-            val isReady = cartItems.isNotEmpty() && (cashReceivedText.toDoubleOrNull() ?: 0.0) >= totalAmount
-            Button(
-                onClick = onValidateSale,
-                enabled = isReady,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = EmeraldGlow,
-                    disabledContainerColor = SlateCardBorder
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // --- 3. CADRE INDÉPENDANT D'ACTION : ENCAISSER & VALIDER ---
+        val isReady = cartItems.isNotEmpty() && (cashReceivedText.toDoubleOrNull() ?: 0.0) >= totalAmount
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(
+                    width = 2.5.dp,
+                    color = if (isReady) EmeraldGlow else SlateCardBorder.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(16.dp)
                 ),
-                shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = SlateDark),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("validate_sale_button")
+                    .padding(14.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Receipt, contentDescription = "Encaisser", tint = if (isReady) SlateDark else Color.Gray)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    "Encaisser & Valider",
-                    color = if (isReady) SlateDark else Color.Gray,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
-                )
+                Button(
+                    onClick = { showConfirmDialog = true },
+                    enabled = isReady,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = EmeraldGlow,
+                        disabledContainerColor = SlateCardBorder.copy(alpha = 0.25f)
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(60.dp)
+                        .testTag("validate_sale_button"),
+                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = "Encaisser",
+                        tint = if (isReady) SlateDark else Color.LightGray,
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        "ENCAISSER & VALIDER",
+                        color = if (isReady) SlateDark else Color.LightGray,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 1.5.sp,
+                        fontSize = 17.sp,
+                        fontFamily = FontFamily.SansSerif
+                    )
+                }
             }
         }
     }
@@ -922,7 +1123,10 @@ data class ReceiptData(
     val items: List<CartItem>,
     val total: Double,
     val cashReceived: Double,
-    val change: Double
+    val change: Double,
+    val operatorName: String = "Opérateur",
+    val storeName: String = "STOCK3D BOUTIQUE",
+    val operatorPhone: String = "+237 680 12 34 56"
 )
 
 fun printReceipt(context: Context, receipt: ReceiptData) {
@@ -1046,8 +1250,8 @@ fun printReceipt(context: Context, receipt: ReceiptData) {
             <body>
                 <div class="receipt-card">
                     <div class="header">
-                        <h1>STOCK3D BOUTIQUE</h1>
-                        <p>Dakar, Sénégal &bull; Tél: +221 33 800 00 00</p>
+                        <h1>${receipt.storeName}</h1>
+                        <p>FIGUIL-cameroun</p>
                     </div>
                     
                     <div class="info-grid">
@@ -1061,7 +1265,7 @@ fun printReceipt(context: Context, receipt: ReceiptData) {
                         </div>
                         <div class="info-item">
                             <span class="info-label">Opérateur:</span>
-                            <span class="info-value">Caisse Jean</span>
+                            <span class="info-value">${receipt.operatorName}</span>
                         </div>
                     </div>
                     
@@ -1126,12 +1330,12 @@ fun printReceipt(context: Context, receipt: ReceiptData) {
 fun shareReceiptText(context: Context, receipt: ReceiptData) {
     try {
         val shareText = StringBuilder().apply {
-            append("⚡ STOCK3D BOUTIQUE - FACTURE ⚡\n")
-            append("Dakar, Sénégal\n")
+            append("⚡ ${receipt.storeName} - FACTURE ⚡\n")
+            append("FIGUIL-cameroun\n")
             append("------------------------------------\n")
             append("Réf Facture : ${receipt.id}\n")
             append("Date        : ${receipt.date}\n")
-            append("Opérateur   : Caisse Jean\n")
+            append("Opérateur   : ${receipt.operatorName}\n")
             append("------------------------------------\n")
             receipt.items.forEach { item ->
                 append("${item.product.name}\n")

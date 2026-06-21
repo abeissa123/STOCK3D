@@ -17,7 +17,8 @@ data class ProductEntity(
     val minThreshold: Int, // Seuil d'alerte pour les alertes de stock
     val entryDate: Long = System.currentTimeMillis(),
     val exitDate: Long? = null,
-    val description: String = ""
+    val description: String = "",
+    val ownerEmail: String = "operator.jean@stock3d.com"
 ) {
     // Helper to check if stock is in warning state
     fun isLowStock(): Boolean = quantity > 0 && quantity <= minThreshold
